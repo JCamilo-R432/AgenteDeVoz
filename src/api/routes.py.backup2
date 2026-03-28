@@ -1,0 +1,338 @@
+"""
+Rutas REST de la API del Agente de Voz.
+Endpoints para llamadas, tickets, sesiones, FAQs y webhooks de Twilio/WhatsApp.
+"""
+
+import uuid
+import time
+from typing import Optional
+from fastapi import APIRouter, HTTPException, Depends, Header, Request, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from pydantic import BaseModel, Field
+from utils.logger import setup_logger
+from utils.validators import Validators
+
+logger = setup_logger("api_routes")
+
+router = APIRouter()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
+
+# ── Modelos Pydantic ───────────────────────────────────────────────────────────
+
+class SessionStartRequest(BaseModel):
+    channel: str = Field("voice", description="voice | whatsapp | web")
+    customer_phone: Optional[str] = None
+    language: str = "es-CO"
+
+class SessionStartResponse(BaseModel):
+    session_id: str
+    greeting: str
+    state: str
+
+class ProcessInputRequest(BaseModel):
+    session_id: str
+    text_input: str
+    audio_base64: Optional[str] = None
+
+class ProcessInputResponse(BaseModel):
+    session_id: str
+    response_text: str
+    intent: str
+    state: str
+    audio_base64: Optional[str] = None
+
+class TicketCreateRequest(BaseModel):
+    customer_phone: str
+    category: str
+    description: str
+    priority: Optional[str] = None
+
+class TicketResponse(BaseModel):
+    ticket_id: str
+    status: str
+    priority: str
+    eta: str
+    created_at: str
+
+class HealthResponse(BaseModel):
+    status: str
+    version: str
+    uptime_seconds: float
+    components: dict
+
+# ── Helpers de autenticación ──────────────────────────────────────────────────
+
+_active_sessions: dict = {}
+_start_time = time.time()
+
+def _verify_token(token: str = Depends(oauth2_scheme)) -> str:
+    """Verifica JWT. Simplificado para MVP — reemplazar con jose en producción."""
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token requerido",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return token
+
+# ── Endpoints de salud ────────────────────────────────────────────────────────
+
+@router.get("/health", response_model=HealthResponse, tags=["Sistema"])
+async def health_check():
+    """Verifica el estado del sistema y sus componentes."""
+    uptime = time.time() - _start_time
+    components = {
+        "api": "ok",
+        "nlp": "ok",
+        "stt": "unknown",
+        "tts": "unknown",
+        "database": "unknown",
+        "redis": "unknown",
+    }
+    # Intento de ping a Redis
+    try:
+        from integrations.redis_cache import RedisCache
+        cache = RedisCache()
+        stats = cache.get_stats()
+        components["redis"] = stats.get("backend", "unknown")
+    except Exception:
+        components["redis"] = "error"
+
+    return HealthResponse(
+        status="ok",
+        version="1.0.0",
+        uptime_seconds=round(uptime, 1),
+        components=components,
+    )
+
+@router.get("/ping", tags=["Sistema"])
+async def ping():
+    return {"pong": True, "ts": int(time.time())}
+
+# ── Autenticación ─────────────────────────────────────────────────────────────
+
+@router.post("/auth/token", tags=["Autenticacion"])
+async def get_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    """
+    Genera token de acceso.
+    NOTA: En producción validar contra base de datos con hash bcrypt.
+    """
+    # Credenciales de demo — reemplazar con DB lookup
+    demo_users = {
+        "admin": "admin123",
+        "supervisor": "sup456",
+        "agent": "agent789",
+    }
+    if (form_data.username not in demo_users or
+            demo_users[form_data.username] != form_data.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Credenciales invalidas",
+        )
+    # Token simplificado — usar python-jose en producción
+    token = f"demo_{form_data.username}_{uuid.uuid4().hex[:8]}"
+    return {"access_token": token, "token_type": "bearer"}
+
+# ── Sesiones de conversación ──────────────────────────────────────────────────
+
+@router.post("/sessions/start", response_model=SessionStartResponse,
+             tags=["Conversacion"])
+async def start_session(req: SessionStartRequest,
+                         token: str = Depends(_verify_token)):
+    """Inicia una nueva sesión de conversación."""
+    session_id = f"sess_{uuid.uuid4().hex[:12]}"
+    try:
+        import sys, os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+        from core.agent import CustomerServiceAgent
+        agent = CustomerServiceAgent(session_id=session_id)
+        greeting = agent.start_call()
+        state = agent.conversation.get_state()
+        _active_sessions[session_id] = agent
+        logger.info(f"Sesion iniciada: {session_id} canal={req.channel}")
+        return SessionStartResponse(
+            session_id=session_id,
+            greeting=greeting,
+            state=state,
+        )
+    except Exception as e:
+        logger.error(f"Error iniciando sesion: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/sessions/process", response_model=ProcessInputResponse,
+             tags=["Conversacion"])
+async def process_input(req: ProcessInputRequest,
+                         token: str = Depends(_verify_token)):
+    """Procesa input de texto/audio en una sesión activa."""
+    agent = _active_sessions.get(req.session_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Sesion no encontrada")
+    if not agent.is_active:
+        raise HTTPException(status_code=410, detail="Sesion finalizada")
+
+    try:
+        response_text = agent.process_input(text_input=req.text_input)
+        intent = agent.conversation.get_context("last_intent", "unknown")
+        state = agent.conversation.get_state()
+        return ProcessInputResponse(
+            session_id=req.session_id,
+            response_text=response_text,
+            intent=intent,
+            state=state,
+        )
+    except Exception as e:
+        logger.error(f"Error procesando input en {req.session_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/sessions/{session_id}/end", tags=["Conversacion"])
+async def end_session(session_id: str, token: str = Depends(_verify_token)):
+    """Finaliza una sesión de conversación."""
+    agent = _active_sessions.get(session_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Sesion no encontrada")
+    farewell = agent.end_call()
+    summary = agent.conversation.get_summary()
+    _active_sessions.pop(session_id, None)
+    return {"session_id": session_id, "farewell": farewell, "summary": summary}
+
+@router.get("/sessions", tags=["Conversacion"])
+async def list_sessions(token: str = Depends(_verify_token)):
+    """Lista sesiones activas (solo para supervisores/admin)."""
+    active = [
+        {
+            "session_id": sid,
+            "state": ag.conversation.get_state(),
+            "is_active": ag.is_active,
+        }
+        for sid, ag in _active_sessions.items()
+    ]
+    return {"active_sessions": len(active), "sessions": active}
+
+# ── Tickets ───────────────────────────────────────────────────────────────────
+
+@router.post("/tickets", response_model=TicketResponse, tags=["Tickets"])
+async def create_ticket(req: TicketCreateRequest,
+                         token: str = Depends(_verify_token)):
+    """Crea un ticket de soporte directamente (sin flujo de voz)."""
+    if not Validators.validate_phone(req.customer_phone):
+        raise HTTPException(status_code=422, detail="Telefono invalido")
+    try:
+        from business.ticket_system import TicketSystem
+        ts = TicketSystem()
+        ticket = ts.create(
+            description=req.description,
+            category=req.category,
+            customer_phone=req.customer_phone,
+            priority=req.priority,
+        )
+        return TicketResponse(**ticket)
+    except Exception as e:
+        logger.error(f"Error creando ticket: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/tickets/{ticket_id}", tags=["Tickets"])
+async def get_ticket(ticket_id: str, token: str = Depends(_verify_token)):
+    """Consulta el estado de un ticket por ID."""
+    if not Validators.validate_ticket_id(ticket_id):
+        raise HTTPException(status_code=422, detail="ID de ticket invalido")
+    try:
+        from business.ticket_system import TicketSystem
+        ts = TicketSystem()
+        result = ts.check_status(ticket_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Ticket no encontrado")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ── Webhooks Twilio ───────────────────────────────────────────────────────────
+
+@router.post("/webhooks/twilio/voice", tags=["Webhooks"])
+async def twilio_voice_webhook(request: Request):
+    """
+    Webhook principal de Twilio para llamadas entrantes.
+    Retorna TwiML para iniciar la conversación.
+    """
+    try:
+        form = await request.form()
+        from_number = form.get("From", "desconocido")
+        call_sid = form.get("CallSid", "")
+        logger.info(f"Llamada entrante: {from_number} SID={call_sid}")
+
+        from integrations.twilio_voice import TwilioVoiceIntegration
+        twilio = TwilioVoiceIntegration()
+        twiml = twilio.generate_initial_twiml(from_number)
+
+        from fastapi.responses import Response
+        return Response(content=twiml, media_type="application/xml")
+    except Exception as e:
+        logger.error(f"Error en webhook Twilio: {e}")
+        from fastapi.responses import Response
+        fallback_twiml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<Response><Say language="es-CO">Lo sentimos, hubo un error. '
+            'Por favor intente de nuevo.</Say></Response>'
+        )
+        return Response(content=fallback_twiml, media_type="application/xml")
+
+@router.post("/webhooks/twilio/status", tags=["Webhooks"])
+async def twilio_status_callback(request: Request):
+    """Recibe actualizaciones de estado de llamada de Twilio."""
+    form = await request.form()
+    call_sid = form.get("CallSid", "")
+    call_status = form.get("CallStatus", "")
+    duration = form.get("CallDuration", "0")
+    logger.info(f"Estado llamada {call_sid}: {call_status} duracion={duration}s")
+    return {"received": True}
+
+# ── Webhooks WhatsApp ─────────────────────────────────────────────────────────
+
+@router.get("/webhooks/whatsapp", tags=["Webhooks"])
+async def whatsapp_verify(
+    hub_mode: Optional[str] = None,
+    hub_verify_token: Optional[str] = None,
+    hub_challenge: Optional[str] = None,
+):
+    """Verificación del webhook de WhatsApp Business API."""
+    from integrations.whatsapp_api import WhatsAppAPI
+    import os
+    wa = WhatsAppAPI(verify_token=os.getenv("WHATSAPP_VERIFY_TOKEN", ""))
+    challenge = wa.verify_webhook(hub_mode or "", hub_verify_token or "",
+                                   hub_challenge or "")
+    if challenge:
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse(challenge)
+    raise HTTPException(status_code=403, detail="Token incorrecto")
+
+@router.post("/webhooks/whatsapp", tags=["Webhooks"])
+async def whatsapp_incoming(request: Request):
+    """Procesa mensajes entrantes de WhatsApp."""
+    try:
+        payload = await request.json()
+        from integrations.whatsapp_api import WhatsAppAPI
+        import os
+        wa = WhatsAppAPI(
+            access_token=os.getenv("WHATSAPP_ACCESS_TOKEN", ""),
+            phone_number_id=os.getenv("WHATSAPP_PHONE_NUMBER_ID", ""),
+        )
+        messages = wa.parse_incoming(payload)
+        for msg in messages:
+            logger.info(f"WhatsApp msg de {msg['from']}: {msg['text'][:50]}")
+            wa.mark_as_read(msg["id"])
+        return {"processed": len(messages)}
+    except Exception as e:
+        logger.error(f"Error en webhook WhatsApp: {e}")
+        return {"error": str(e)}
+
+# ── Métricas ──────────────────────────────────────────────────────────────────
+
+@router.get("/metrics", tags=["Sistema"])
+async def get_metrics(token: str = Depends(_verify_token)):
+    """Retorna métricas básicas del sistema."""
+    return {
+        "active_sessions": len(_active_sessions),
+        "uptime_seconds": round(time.time() - _start_time, 1),
+        "version": "1.0.0",
+    }

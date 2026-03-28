@@ -1,0 +1,609 @@
+openapi: "3.0.3"
+info:
+  title: AgenteDeVoz API
+  description: |
+    API REST para el sistema de agente de voz de atencion al cliente.
+
+    ## Autenticacion
+    La mayoria de endpoints requieren un JWT Bearer token obtenido via `/api/v1/auth/login`.
+
+    ## Rate Limiting
+    - Endpoints publicos: 100 requests/minuto por IP
+    - Endpoints autenticados: 500 requests/minuto por usuario
+    - Webhooks entrantes (Twilio/WhatsApp): 1000 requests/minuto
+
+    ## Versionado
+    La API sigue Semantic Versioning. La version actual es v1.
+    Breaking changes se introducen en versiones mayores (/api/v2/).
+  version: "1.0.0"
+  contact:
+    name: Equipo AgenteDeVoz
+    email: api-support@[dominio].com.co
+  license:
+    name: Propietario
+    url: https://[dominio].com.co/terminos
+
+servers:
+  - url: https://[tu-dominio.com]/api/v1
+    description: Produccion
+  - url: https://staging.[tu-dominio.com]/api/v1
+    description: Staging
+  - url: http://localhost:8000/api/v1
+    description: Desarrollo local
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: health
+    description: Estado del sistema
+  - name: voice
+    description: Procesamiento de voz y conversaciones
+  - name: tickets
+    description: Sistema de tickets de soporte
+  - name: conversations
+    description: Historial y estado de conversaciones
+  - name: metrics
+    description: Metricas del sistema (Prometheus)
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Health check del sistema
+      description: |
+        Verifica el estado de todos los componentes del sistema:
+        base de datos, Redis, APIs externas y el agente de voz.
+      security: []
+      responses:
+        "200":
+          description: Sistema saludable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: healthy
+                version: "1.0.0"
+                components:
+                  database: healthy
+                  redis: healthy
+                  twilio: healthy
+                  google_stt: healthy
+                timestamp: "2026-03-22T10:00:00Z"
+        "503":
+          description: Sistema degradado o no disponible
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /ping:
+    get:
+      tags: [health]
+      summary: Ping simple para liveness check
+      security: []
+      responses:
+        "200":
+          description: Pong
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pong:
+                    type: boolean
+                    example: true
+
+  /voice/process:
+    post:
+      tags: [voice]
+      summary: Procesar audio de voz
+      description: |
+        Recibe audio base64, ejecuta STT, clasifica la intencion,
+        genera respuesta y retorna TTS. Punto de entrada principal
+        para el pipeline de voz completo.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VoiceProcessRequest"
+      responses:
+        "200":
+          description: Audio procesado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceProcessResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /tickets:
+    get:
+      tags: [tickets]
+      summary: Listar tickets de soporte
+      description: Retorna lista paginada de tickets con filtros opcionales.
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, in_progress, escalated, resolved, closed]
+          description: Filtrar por estado del ticket
+        - name: priority
+          in: query
+          schema:
+            type: string
+            enum: [low, medium, high, critical]
+          description: Filtrar por prioridad
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: from_date
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Filtrar tickets creados desde esta fecha (YYYY-MM-DD)
+      responses:
+        "200":
+          description: Lista de tickets
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TicketListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+    post:
+      tags: [tickets]
+      summary: Crear nuevo ticket de soporte
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTicketRequest"
+      responses:
+        "201":
+          description: Ticket creado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ticket"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /tickets/{ticket_id}:
+    get:
+      tags: [tickets]
+      summary: Obtener ticket por ID
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^TKT-[0-9]{6}$"
+          example: "TKT-001234"
+      responses:
+        "200":
+          description: Detalle del ticket
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ticket"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    patch:
+      tags: [tickets]
+      summary: Actualizar ticket (estado, prioridad, notas)
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTicketRequest"
+      responses:
+        "200":
+          description: Ticket actualizado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Ticket"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /conversations/{session_id}:
+    get:
+      tags: [conversations]
+      summary: Obtener historial de una conversacion
+      description: Retorna todos los turnos de la conversacion identificada por session_id.
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        "200":
+          description: Historial de conversacion
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConversationHistory"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /metrics:
+    get:
+      tags: [metrics]
+      summary: Metricas en formato Prometheus
+      description: |
+        Endpoint de metricas compatible con Prometheus scraping.
+        Retorna texto en formato exposition de Prometheus.
+        Acceso restringido a la red interna o con API key de metricas.
+      security:
+        - MetricsApiKey: []
+      responses:
+        "200":
+          description: Metricas en formato Prometheus
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                # HELP agentevoz_requests_total Total de requests procesados
+                # TYPE agentevoz_requests_total counter
+                agentevoz_requests_total{method="POST",endpoint="/voice/process",status="200"} 1247
+                # HELP agentevoz_latency_seconds Latencia de procesamiento en segundos
+                # TYPE agentevoz_latency_seconds histogram
+                agentevoz_latency_seconds_bucket{le="0.5"} 892
+                agentevoz_latency_seconds_bucket{le="1.0"} 1180
+                agentevoz_latency_seconds_bucket{le="2.0"} 1235
+                agentevoz_latency_seconds_bucket{le="+Inf"} 1247
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token obtenido via POST /api/v1/auth/login
+    MetricsApiKey:
+      type: apiKey
+      in: header
+      name: X-Metrics-Key
+
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, version, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        version:
+          type: string
+          example: "1.0.0"
+        components:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [healthy, degraded, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+
+    VoiceProcessRequest:
+      type: object
+      required: [audio_data, session_id]
+      properties:
+        audio_data:
+          type: string
+          format: byte
+          description: Audio en base64 (WAV o OGG, max 60s)
+        session_id:
+          type: string
+          format: uuid
+          description: ID unico de la sesion de conversacion
+        language:
+          type: string
+          default: "es-CO"
+          enum: ["es-CO", "es-ES", "es-MX"]
+          description: Codigo de idioma BCP-47
+        channel:
+          type: string
+          enum: [voice, whatsapp, web]
+          default: voice
+
+    VoiceProcessResponse:
+      type: object
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        transcript:
+          type: string
+          description: Texto transcrito del audio de entrada
+        intent:
+          type: string
+          description: Intencion detectada
+          example: "crear_ticket"
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        response_text:
+          type: string
+          description: Respuesta del agente en texto
+        response_audio:
+          type: string
+          format: byte
+          description: Respuesta del agente en audio base64 (TTS)
+        state:
+          type: string
+          description: Estado de la conversacion despues del procesamiento
+          enum: [INITIAL, GREETING, FAQ, TICKET_CREATION, TICKET_QUERY, ESCALATING, FAREWELL, ESCALATED]
+        action_taken:
+          type: string
+          description: Accion ejecutada (ej: ticket_created, faq_answered, escalated)
+        ticket_id:
+          type: string
+          nullable: true
+          description: ID del ticket creado, si aplica
+
+    Ticket:
+      type: object
+      properties:
+        id:
+          type: string
+          pattern: "^TKT-[0-9]{6}$"
+          example: "TKT-001234"
+        title:
+          type: string
+          example: "Falla en la conexion de internet"
+        description:
+          type: string
+        status:
+          type: string
+          enum: [open, in_progress, escalated, resolved, closed]
+        priority:
+          type: string
+          enum: [low, medium, high, critical]
+        customer_phone:
+          type: string
+          example: "+573001234567"
+        session_id:
+          type: string
+          format: uuid
+        assigned_to:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        resolved_at:
+          type: string
+          format: date-time
+          nullable: true
+        resolution_notes:
+          type: string
+          nullable: true
+
+    CreateTicketRequest:
+      type: object
+      required: [title, description, customer_phone]
+      properties:
+        title:
+          type: string
+          minLength: 5
+          maxLength: 200
+        description:
+          type: string
+          minLength: 10
+          maxLength: 5000
+        customer_phone:
+          type: string
+          pattern: "^\\+[1-9]\\d{1,14}$"
+        priority:
+          type: string
+          enum: [low, medium, high, critical]
+          default: medium
+        session_id:
+          type: string
+          format: uuid
+
+    UpdateTicketRequest:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [in_progress, escalated, resolved, closed]
+        priority:
+          type: string
+          enum: [low, medium, high, critical]
+        assigned_to:
+          type: string
+        resolution_notes:
+          type: string
+
+    TicketListResponse:
+      type: object
+      properties:
+        tickets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Ticket"
+        total:
+          type: integer
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total_pages:
+          type: integer
+
+    ConversationHistory:
+      type: object
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+        channel:
+          type: string
+          enum: [voice, whatsapp, web]
+        turns:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConversationTurn"
+        ticket_created:
+          type: string
+          nullable: true
+        escalated:
+          type: boolean
+
+    ConversationTurn:
+      type: object
+      properties:
+        turn_number:
+          type: integer
+        timestamp:
+          type: string
+          format: date-time
+        user_input:
+          type: string
+        agent_response:
+          type: string
+        intent:
+          type: string
+        state:
+          type: string
+        processing_time_ms:
+          type: number
+
+    ErrorResponse:
+      type: object
+      required: [error, message, timestamp]
+      properties:
+        error:
+          type: string
+          example: "validation_error"
+        message:
+          type: string
+          example: "El campo 'customer_phone' tiene formato invalido"
+        details:
+          type: object
+          additionalProperties: true
+        timestamp:
+          type: string
+          format: date-time
+        request_id:
+          type: string
+
+  responses:
+    BadRequest:
+      description: Request invalido o parametros incorrectos
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: validation_error
+            message: "customer_phone debe tener formato E.164 (+57XXXXXXXXXX)"
+            timestamp: "2026-03-22T10:00:00Z"
+
+    Unauthorized:
+      description: No autenticado o token invalido/expirado
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: unauthorized
+            message: "Token JWT invalido o expirado"
+            timestamp: "2026-03-22T10:00:00Z"
+
+    NotFound:
+      description: Recurso no encontrado
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: not_found
+            message: "Ticket TKT-999999 no encontrado"
+            timestamp: "2026-03-22T10:00:00Z"
+
+    RateLimited:
+      description: Demasiadas solicitudes
+      headers:
+        Retry-After:
+          description: Segundos hasta que se puede reintentar
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: rate_limited
+            message: "Limite de 100 requests/minuto superado"
+            timestamp: "2026-03-22T10:00:00Z"
+
+    InternalError:
+      description: Error interno del servidor
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: internal_server_error
+            message: "Error interno. Por favor reintente en unos minutos."
+            timestamp: "2026-03-22T10:00:00Z"

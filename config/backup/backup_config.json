@@ -1,0 +1,43 @@
+{
+  "database": {
+    "type": "postgresql",
+    "host": "${DB_HOST:-localhost}",
+    "port": "${DB_PORT:-5432}",
+    "name": "${DB_NAME:-agentevoz}",
+    "user": "${DB_USER:-agentevoz_user}"
+  },
+  "backup": {
+    "dir": "backups",
+    "retention_days": 30,
+    "compression": "gzip",
+    "checksum": "sha256",
+    "format": "{db_name}_{label}_{timestamp}.sql.gz"
+  },
+  "schedule": {
+    "full_backup_cron": "0 2 * * *",
+    "cleanup_cron": "0 3 * * 0",
+    "test_restore_cron": "0 4 * * 1"
+  },
+  "s3": {
+    "enabled": false,
+    "bucket": "${BACKUP_S3_BUCKET}",
+    "prefix": "agentevoz/backups",
+    "storage_class": "STANDARD_IA",
+    "lifecycle_days": 90
+  },
+  "notifications": {
+    "on_success": false,
+    "on_failure": true,
+    "email": "${ALERT_EMAIL:-admin@agentevoz.com}"
+  },
+  "restore": {
+    "test_db_suffix": "_restore_test",
+    "verify_user_count": true,
+    "auto_drop_test_db": true
+  },
+  "labels": {
+    "pre_deploy": "pre_deploy",
+    "daily": "daily",
+    "manual": "manual"
+  }
+}

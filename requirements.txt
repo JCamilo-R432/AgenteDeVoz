@@ -1,0 +1,64 @@
+# Core Web Framework
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+python-multipart>=0.0.6
+
+# Voice: STT / TTS
+SpeechRecognition>=3.10.0
+pyttsx3>=2.90
+pyaudio>=0.2.14
+
+# Google Cloud APIs
+google-cloud-speech>=2.27.0
+google-cloud-texttospeech>=2.17.0
+google-auth>=2.35.0
+
+# NLP & AI (anthropic puede dar problemas, usar versión específica)
+openai>=1.50.0
+anthropic>=0.30.0
+
+# Database
+psycopg2-binary>=2.9.0
+SQLAlchemy>=2.0.0
+alembic>=1.11.0
+asyncpg>=0.29.0
+aiosqlite>=0.20.0
+
+# Cache / Sessions
+redis>=5.0.0
+
+# Twilio
+twilio>=8.0.0
+
+# HTTP Client
+httpx>=0.24.0
+
+# Security / Auth
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.0
+
+# Payments
+stripe>=5.0.0
+mercadopago>=2.0.0
+
+# Email
+sendgrid>=6.10.0
+aiosmtplib>=3.0.0
+jinja2>=3.1.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=5.0.0
+
+# Logging
+loguru>=0.7.0
+
+# Utilities
+faker>=24.0.0
+reportlab>=4.0.0
+sentry-sdk[fastapi]>=1.28.0

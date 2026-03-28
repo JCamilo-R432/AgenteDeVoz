@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgenteDeVoz - Dashboard</title>
+  <link rel="stylesheet" href="/dashboard/static/css/style.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">AgenteDeVoz</div>
+    <div class="nav-links">
+      <a href="/dashboard" class="nav-link {% if page == 'home' %}active{% endif %}">Inicio</a>
+      <a href="/dashboard/conversations" class="nav-link {% if page == 'conversations' %}active{% endif %}">Conversaciones</a>
+      <a href="/dashboard/tickets" class="nav-link {% if page == 'tickets' %}active{% endif %}">Tickets</a>
+      <a href="/dashboard/alerts" class="nav-link {% if page == 'alerts' %}active{% endif %}">Alertas</a>
+    </div>
+    <div class="nav-status">
+      <span class="status-dot status-ok"></span>
+      Sistema OK | Uptime: <span id="uptime">{{ stats.uptime }}</span>
+    </div>
+  </nav>
+
+  <main class="container">
+    <h1 class="page-title">Panel Principal</h1>
+
+    <!-- KPIs -->
+    <div class="kpi-grid">
+      <div class="kpi-card kpi-primary">
+        <div class="kpi-value" id="active-calls">{{ stats.active_calls }}</div>
+        <div class="kpi-label">Llamadas Activas</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value">{{ stats.calls_today }}</div>
+        <div class="kpi-label">Llamadas Hoy</div>
+      </div>
+      <div class="kpi-card kpi-success">
+        <div class="kpi-value">{{ stats.resolution_rate }}%</div>
+        <div class="kpi-label">Resolucion Automatica</div>
+      </div>
+      <div class="kpi-card kpi-warning">
+        <div class="kpi-value">{{ stats.escalation_rate }}%</div>
+        <div class="kpi-label">Tasa de Escalacion</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value">{{ stats.avg_handle_time }}</div>
+        <div class="kpi-label">Tiempo Promedio</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value">{{ stats.tickets_open }}</div>
+        <div class="kpi-label">Tickets Abiertos</div>
+      </div>
+    </div>
+
+    <!-- Estado de componentes -->
+    <div class="section">
+      <h2>Estado de Componentes</h2>
+      <div class="components-grid">
+        <div class="component-card">
+          <span class="comp-name">API REST</span>
+          <span class="badge badge-ok">{{ stats.api_status }}</span>
+        </div>
+        <div class="component-card">
+          <span class="comp-name">STT Engine</span>
+          <span class="badge badge-ok">{{ stats.stt_status }}</span>
+        </div>
+        <div class="component-card">
+          <span class="comp-name">TTS Engine</span>
+          <span class="badge badge-ok">{{ stats.tts_status }}</span>
+        </div>
+        <div class="component-card">
+          <span class="comp-name">Base de Datos</span>
+          <span class="badge badge-ok">{{ stats.db_status }}</span>
+        </div>
+        <div class="component-card">
+          <span class="comp-name">Redis Cache</span>
+          <span class="badge badge-ok">{{ stats.redis_status }}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Conversaciones recientes -->
+    <div class="section">
+      <div class="section-header">
+        <h2>Conversaciones Recientes</h2>
+        <a href="/dashboard/conversations" class="btn-link">Ver todas</a>
+      </div>
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Session ID</th>
+            <th>Telefono</th>
+            <th>Estado</th>
+            <th>Ultima Intencion</th>
+            <th>Duracion</th>
+            <th>Inicio</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for conv in recent_conversations %}
+          <tr>
+            <td class="mono">{{ conv.session_id }}</td>
+            <td>{{ conv.phone }}</td>
+            <td>
+              <span class="badge {% if conv.state == 'FIN' %}badge-gray{% else %}badge-ok{% endif %}">
+                {{ conv.state }}
+              </span>
+            </td>
+            <td><span class="intent-tag">{{ conv.last_intent }}</span></td>
+            <td>{{ conv.duration }}</td>
+            <td>{{ conv.started_at }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="/dashboard/static/js/dashboard.js"></script>
+</body>
+</html>

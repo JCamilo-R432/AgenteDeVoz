@@ -1,0 +1,68 @@
+{
+  "zone_settings": {
+    "security_level": "medium",
+    "ssl": "full_strict",
+    "always_use_https": true,
+    "http2": "on",
+    "http3": "on",
+    "min_tls_version": "1.2",
+    "browser_cache_ttl": 14400,
+    "challenge_ttl": 1800
+  },
+  "page_rules": [
+    {
+      "description": "Cache audio TTS responses",
+      "url_pattern": "https://api.agentevoz.com/audio/*",
+      "actions": {
+        "cache_level": "cache_everything",
+        "edge_cache_ttl": 3600,
+        "browser_cache_ttl": 1800
+      }
+    },
+    {
+      "description": "Cache static assets",
+      "url_pattern": "https://api.agentevoz.com/static/*",
+      "actions": {
+        "cache_level": "cache_everything",
+        "edge_cache_ttl": 86400,
+        "browser_cache_ttl": 86400
+      }
+    },
+    {
+      "description": "No cache for API calls",
+      "url_pattern": "https://api.agentevoz.com/v*/*",
+      "actions": {
+        "cache_level": "bypass",
+        "disable_security": false
+      }
+    },
+    {
+      "description": "Redirect HTTP to HTTPS",
+      "url_pattern": "http://api.agentevoz.com/*",
+      "actions": {
+        "always_use_https": true
+      }
+    }
+  ],
+  "firewall_rules": [
+    {
+      "description": "Block bad bots",
+      "expression": "(cf.client.bot) and not (cf.verified_bot_category in {\"search_engine\"})",
+      "action": "block"
+    },
+    {
+      "description": "Rate limit voice API",
+      "expression": "http.request.uri.path contains \"/voice/\"",
+      "action": "challenge",
+      "threshold": 100,
+      "period": 60
+    }
+  ],
+  "workers": [
+    {
+      "name": "agentevoz-edge-cache",
+      "route": "api.agentevoz.com/audio/*",
+      "description": "Edge caching for TTS audio responses"
+    }
+  ]
+}

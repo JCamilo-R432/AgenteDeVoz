@@ -1,0 +1,41 @@
+{
+  "domain": "agentevoz.com",
+  "email": "admin@agentevoz.com",
+  "webroot": "/var/www/html",
+  "ssl": {
+    "provider": "letsencrypt",
+    "staging": false,
+    "auto_renewal": true,
+    "renewal_cron": "0 3 * * *",
+    "renewal_days_before_expiry": 30,
+    "critical_days_threshold": 7
+  },
+  "nginx": {
+    "reload_after_renewal": true,
+    "ssl_protocols": "TLSv1.2 TLSv1.3",
+    "ssl_ciphers": "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384",
+    "ssl_prefer_server_ciphers": "off",
+    "ssl_session_timeout": "1d",
+    "ssl_session_cache": "shared:SSL:10m",
+    "ssl_stapling": true,
+    "ssl_stapling_verify": true
+  },
+  "hsts": {
+    "enabled": true,
+    "max_age": 31536000,
+    "include_subdomains": true,
+    "preload": true
+  },
+  "monitoring": {
+    "check_interval_hours": 24,
+    "alert_on_expiry_days": [30, 14, 7, 3, 1],
+    "alert_email": "admin@agentevoz.com"
+  },
+  "paths": {
+    "cert_dir": "/etc/letsencrypt/live/agentevoz.com",
+    "cert_file": "/etc/letsencrypt/live/agentevoz.com/fullchain.pem",
+    "key_file": "/etc/letsencrypt/live/agentevoz.com/privkey.pem",
+    "chain_file": "/etc/letsencrypt/live/agentevoz.com/chain.pem",
+    "self_signed_dir": "config/ssl"
+  }
+}

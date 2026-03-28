@@ -1,0 +1,54 @@
+# Environment variables (CRÍTICO)
+.env
+.env.local
+.env.production
+.env.backup*
+*.env
+
+# Secrets
+*.pem
+*.key
+*.crt
+secrets/
+credentials/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+pm2logs/
+
+# Database
+*.db
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node modules
+node_modules/
+
+# Uploads
+uploads/
+media/

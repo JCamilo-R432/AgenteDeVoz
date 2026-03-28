@@ -1,0 +1,636 @@
+import logging
+from datetime import datetime
+from typing import Dict, Optional
+
+from config.settings import settings
+from core.conversation_manager import ConversationManager
+from knowledge.kb import kb
+from knowledge.llm_generator import llm_generator
+from core.quick_responses import get_quick_response
+from nlp.intent_classifier import IntentClassifier
+from nlp.explicit_rules import get_explicit_intent
+from nlp.emotion_detector import detect_emotion, get_empathetic_prefix
+from nlp.entity_extractor import EntityExtractor
+from nlp.response_generator import ResponseGenerator
+from speech.stt_engine import STTEngine
+from speech.tts_engine import TTSEngine
+from business.faq_manager import FAQManager
+from business.ticket_system import TicketSystem
+from business.escalation_handler import EscalationHandler
+from utils.logger import setup_logger
+from utils.validators import Validators
+
+
+class CustomerServiceAgent:
+    """
+    Agente principal de atención al cliente por voz.
+
+    Orquesta el pipeline completo:
+    Audio → STT → NLP → Business Logic → TTS → Audio
+    """
+
+    FALLBACK_RESPONSES = [
+        "No entendí bien lo que dijiste. ¿Podrías repetirlo de otra forma?",
+        "Disculpa, sigo sin entenderte claramente. ¿Puedes ser más específico?",
+        "Veo que tenemos dificultades para comunicarnos. ¿Deseas que te transfiera con un agente humano?",
+    ]
+
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.logger = setup_logger(f"agent.{session_id}", settings.LOG_LEVEL)
+
+        # Componentes de voz
+        self.stt = STTEngine()
+        self.tts = TTSEngine()
+
+        # Componentes de NLP
+        self.intent_classifier = IntentClassifier()
+        self.entity_extractor = EntityExtractor()
+        self.response_generator = ResponseGenerator()
+
+        # Componentes de negocio
+        self.faq = FAQManager()
+        self.tickets = TicketSystem()
+        self.escalation = EscalationHandler()
+
+        # Gestión de conversación
+        self.conversation = ConversationManager(session_id)
+        self.is_active = True
+
+        self.logger.info(f"Agente inicializado | Sesión: {session_id}")
+
+    # ── Ciclo de vida de la llamada ───────────────────────────────────────────
+
+    def start_call(self) -> str:
+        """Inicia la llamada con el saludo de bienvenida."""
+        hour = datetime.now().hour
+        if 6 <= hour < 12:
+            time_greeting = "Buenos días"
+        elif 12 <= hour < 18:
+            time_greeting = "Buenas tardes"
+        else:
+            time_greeting = "Buenas noches"
+
+        greeting = (
+            f"{time_greeting}, bienvenido al servicio de atención al cliente. "
+            "Soy Ana, tu asistente virtual. "
+            "¿Me podrías dar tu número de teléfono para encontrar tu cuenta?"
+        )
+
+        self.conversation.set_state("AUTENTICANDO")
+        self.conversation.add_message("assistant", greeting)
+        self.tts.speak(greeting)
+        self.logger.info(f"Llamada iniciada | Sesión: {self.session_id}")
+        return greeting
+
+    def end_call(self, csat_score: Optional[int] = None) -> str:
+        """Finaliza la llamada, guarda registros y libera recursos."""
+        farewell = "Gracias por comunicarte con nosotros. ¡Que tengas un excelente día!"
+        self.conversation.add_message("assistant", farewell)
+        self.conversation.set_state("FIN")
+
+        if csat_score:
+            self.conversation.set_context("csat_score", csat_score)
+
+        self._save_call_log()
+        self.is_active = False
+        self.tts.speak(farewell)
+        self.logger.info(
+            f"Llamada finalizada | Sesión: {self.session_id} | "
+            f"Duración: {self.conversation.get_duration()}s"
+        )
+        return farewell
+
+    # ── Procesamiento de input ────────────────────────────────────────────────
+
+    def process_input(
+        self,
+        audio_input: Optional[str] = None,
+        text_input: Optional[str] = None,
+    ) -> str:
+        """
+        Procesa la entrada del usuario (audio o texto) y retorna la respuesta.
+
+        Args:
+            audio_input: Ruta al archivo de audio del usuario.
+            text_input: Texto directo (para modo CLI o testing).
+
+        Returns:
+            Texto de respuesta del agente.
+        """
+        if not self.is_active:
+            return "La sesión ha finalizado."
+
+        try:
+            self.conversation.set_state("PROCESANDO")
+
+            # 1. STT: audio → texto
+            if audio_input:
+                user_text = self.stt.transcribe(audio_input)
+                if not user_text:
+                    return self._handle_silence()
+            else:
+                user_text = text_input
+
+            if not user_text or not user_text.strip():
+                return self._handle_silence()
+
+            # Sanitizar input
+            user_text = Validators.sanitize_input(user_text)
+            # === SISTEMA HÍBRIDO: Fast Path + Smart Path ===
+            
+            # 1. FAST PATH: Reglas para queries ultra-comunes (< 100ms)
+            quick_response = get_quick_response(user_text)
+            if quick_response:
+                self.conversation.add_message("user", user_text)
+                self.conversation.add_message("assistant", quick_response)
+                self.logger.info(f"[{self.session_id}] Fast path: {quick_response[:50]}...")
+                try:
+                    self.tts.speak(quick_response)
+                except:
+                    pass
+                return quick_response
+            
+            # 2. SMART PATH: LLM + KB para preguntas abiertas/complejas
+            # Detectar emoción para contexto
+            from nlp.emotion_detector import detect_emotion
+            emotion_data = detect_emotion(user_text)
+            
+            # Buscar en Base de Conocimiento
+            kb_results = kb.search(user_text)
+            
+            if kb_results:
+                # Generar respuesta natural con LLM + contexto KB
+                response = llm_generator.generate(user_text, kb_results, emotion_data)
+            else:
+                # Sin match en KB: fallback empático
+                response = llm_generator._generate_fallback(user_text, emotion_data)
+            
+            # Registrar y responder
+            self.conversation.add_message("user", user_text)
+            self.conversation.add_message("assistant", response)
+            self.logger.info(f"[{self.session_id}] Smart path: {response[:50]}...")
+            
+            try:
+                self.tts.speak(response)
+            except:
+                pass
+            
+            return response
+            # === FIN SISTEMA HÍBRIDO ===
+
+
+            # 2. Registrar en historial
+            self.conversation.add_message("user", user_text)
+            self.logger.info(f"[{self.session_id}] Usuario: {user_text}")
+
+            # 3. NLP: clasificar intención y extraer entidades
+            history = self.conversation.get_history_for_llm()
+            # Clasificar con inteligencia emocional
+            explicit_result = get_explicit_intent(user_text)
+            emotion_data = explicit_result.get("emotion_data", detect_emotion(user_text))
+            
+            if explicit_result.get("should_use_explicit") and explicit_result.get("intent"):
+                intent = explicit_result["intent"]
+                self.logger.info(f"[Intent+Emoción] {user_text} -> {intent} | {emotion_data['emotion']}")
+            else:
+                intent = self.intent_classifier.classify(user_text, history) if self.intent_classifier else "consulta_general"
+            
+            entities = self.entity_extractor.extract_all(user_text)
+            sentiment = emotion_data
+
+            # 3b. Autenticación automática por teléfono (estado AUTENTICANDO)
+            if self.conversation.get_context("state") == "AUTENTICANDO" or \
+               not self.conversation.get_context("authenticated"):
+                phone = entities.get("phone") or self.conversation.get_context("caller_phone")
+                if phone and not self.conversation.get_context("authenticated"):
+                    self._try_authenticate_by_phone(phone)
+
+            self.conversation.register_intent(intent)
+            self.conversation.set_context("last_intent", intent)
+            # === MANEJO DIRECTO DE INTENTS EXPLÍCITOS (antes de _execute_action) ===
+            explicit_response = None
+            
+            if intent == "facturacion_solicitar":
+                explicit_response = "Para generar tu factura necesito:\n\n1. Tu nombre o razón social\n2. CUIT/CUIL o DNI\n3. Email para enviártela\n4. Dirección de facturación\n\n¿Me podés proporcionar esos datos?"
+            elif intent == "metodos_pago":
+                explicit_response = "Aceptamos los siguientes métodos de pago:\n\n💳 Tarjetas de crédito y débito (Visa, Mastercard, Amex)\n🏦 Transferencia bancaria\n💵 Efectivo en puntos de pago (Rapipago, Pago Fácil)\n💰 Mercado Pago\n\n¿Con cuál preferís pagar?"
+            elif intent == "hacer_pedido":
+                explicit_response = "¡Perfecto! Para ayudarte con tu pedido necesito:\n\n1. ¿Qué producto te gustaría comprar?\n2. ¿Qué cantidad necesitas?\n3. ¿A dónde lo enviaremos?\n\nDéjame ayudarte con el proceso."
+            elif intent == "consultar_horario":
+                explicit_response = "Nuestro horario de atención es:\n\n🕐 Lunes a Viernes: 9:00 - 18:00 hs\n🕐 Sábados: 9:00 - 13:00 hs\n📧 Soporte online 24/7\n\n¿Necesitás otra información?"
+            elif intent == "consultar_ubicacion":
+                explicit_response = "Estamos ubicados en:\n\n📍 Av. Principal 1234, Ciudad\n📍 Sucursal Norte: Shopping del Norte, Local 45\n📍 Sucursal Sur: Galería del Sur, Planta Baja\n\n🗺️ ¿Necesitás indicaciones para llegar?"
+            elif intent == "consultar_envios":
+                explicit_response = "Realizamos envíos a todo el país:\n\n🚚 Envío estándar: 3-5 días hábiles (gratis en compras +$10.000)\n🚀 Envío express: 24-48 hs (consultar costo)\n📦 Retiro en sucursal: gratis y disponible en 2hs\n\n¿A dónde necesitás el envío?"
+            elif intent == "consultar_devoluciones":
+                explicit_response = "Política de devoluciones:\n\n✅ 30 días para devolver sin preguntas\n✅ Producto sin usar y en su embalaje original\n✅ Reembolso completo en 5-7 días o cambio inmediato\n✅ Retiro gratis desde tu domicilio\n\n¿Necesitás iniciar una devolución?"
+            elif intent == "consultar_estado_pedido":
+                explicit_response = "Para consultar el estado de tu pedido necesito:\n\n1. Número de pedido (ej: #PED-12345)\n2. O tu número de teléfono registrado\n3. O tu email de compra\n\n¿Me podés proporcionar alguno de estos datos?"
+            elif intent == "consultar_precios":
+                explicit_response = "Tenemos productos para todos los presupuestos:\n\n💰 Productos desde $500\n💳 3, 6 y 12 cuotas sin interés con tarjetas seleccionadas\n🏦 10% descuento en transferencia/efectivo\n🎁 Promociones semanales en nuestra web\n\n¿Qué producto te interesa?"
+            elif intent == "consultar_productos":
+                explicit_response = "Contamos con amplia variedad:\n\n📦 Más de 1.000 productos en stock\n🔍 Catálogo completo en econify.store\n📱 Asesoramiento personalizado por WhatsApp\n✨ Productos nuevos cada semana\n\n¿Qué tipo de producto buscás?"
+            elif intent == "crear_reclamo_empatico":
+                explicit_response = "Lamento mucho que hayas tenido esta experiencia. Para ayudarte de inmediato:\n\n1. Voy a generar un ticket prioritario\n2. Un supervisor te contactará en menos de 2 horas\n3. Buscaremos la mejor solución para vos\n\n¿Me podés contar brevemente qué sucedió?"
+            elif intent == "saludo":
+                explicit_response = "¡Hola! 👋 Bienvenido/a a Econify.\n\nSoy tu asistente virtual y estoy aquí para ayudarte.\n\n¿En qué puedo asistirte hoy?\n\n💡 Puedo ayudarte con: Pedidos, Facturación, Envíos, Devoluciones, Consultas generales"
+            elif intent == "despedida":
+                explicit_response = "¡Gracias por contactarnos! 😊\n\nQue tengas un excelente día.\n\n¿Necesitás algo más antes de finalizar? Estoy aquí para lo que necesites."
+            elif intent == "consulta_general":
+                explicit_response = "Te puedo ayudar con:\n\n📋 Hacer o consultar un pedido\n🧾 Facturación y comprobantes\n💳 Métodos de pago y promociones\n🚚 Envíos, entregas y seguimiento\n🔄 Devoluciones y cambios\n❓ Consultas generales\n\n¿Sobre qué tema querés consultar?"
+            
+            # Si hay respuesta explícita, retornarla directamente (con empatía si hay emoción)
+            if explicit_response:
+                if emotion_data and emotion_data.get("emotion") != "neutral":
+                    from nlp.emotion_detector import get_empathetic_prefix
+                    prefix = get_empathetic_prefix(emotion_data)
+                    if prefix:
+                        explicit_response = prefix + explicit_response
+                self.conversation.add_message("assistant", explicit_response)
+                self.tts.speak(explicit_response)
+                return explicit_response
+            
+            # Si no es intent explícito, continuar con _execute_action normal
+
+            self.conversation.reset_fallback()
+
+            self.logger.info(
+                f"[{self.session_id}] Intent: {intent} | "
+                f"Entities: {list(entities.keys())} | Sentiment: {sentiment}"
+            )
+
+            # 4. Alerta por sentimiento negativo
+            if sentiment == "negative":
+                self.logger.warning(f"[{self.session_id}] Cliente frustrado detectado.")
+
+            # 5. Ejecutar acción de negocio (ticket, escalación, etc.)
+            self.conversation.set_state("RESPONDIENDO")
+            action_result = self._execute_action(intent, entities, user_text, sentiment)
+
+            # 6. Generar respuesta natural con LLM
+            customer_context = self._build_customer_context()
+            response = self.response_generator.generate(
+                user_text=user_text,
+                history=history,
+                intent=intent,
+                entities=entities,
+                customer_context=customer_context,
+                action_result=action_result,
+            )
+
+            # 7. Registrar respuesta y sintetizar
+            self.conversation.add_message("assistant", response)
+            self.tts.speak(response)
+
+            return response
+
+        except Exception as e:
+            self.logger.error(f"[{self.session_id}] Error: {e}", exc_info=True)
+            # Fallback empático - NUNCA decir "error técnico"
+            try:
+                from nlp.emotion_detector import detect_emotion, get_empathetic_prefix
+                emotion = detect_emotion(user_text if 'user_text' in locals() else "")
+                prefix = get_empathetic_prefix(emotion)
+                
+                if emotion.get("intensity", 0) >= 7 or emotion.get("emotion") in ["enojo", "ansiedad"]:
+                    fallback = f"""{prefix}Lamento el inconveniente. Estoy teniendo un pequeño problema técnico, pero no te preocupes.
+
+Para ayudarte ahora mismo:
+📋 Puedo transferirte con un asesor humano
+🔄 O intentamos de nuevo con tu consulta
+
+¿Qué preferís?"""
+                else:
+                    fallback = f"""{prefix}Ups, tuve un pequeño inconveniente. 
+
+Pero estoy aquí para ayudarte. ¿Podrías repetirme qué necesitás?
+
+Puedo asistirte con:
+📋 Pedidos | 🧾 Facturación | 💳 Pagos | 🚚 Envíos | 🔄 Devoluciones"""
+            except:
+                # Fallback ultra-seguro si incluso el detector falla
+                fallback = "Disculpa el inconveniente. ¿Podrías repetirme qué necesitás? Estoy aquí para ayudarte con Pedidos, Facturación, Pagos, Envíos o Devoluciones."
+            
+            try:
+                self.tts.speak(fallback)
+            except:
+                pass  # Si TTS falla, igual retornamos el texto
+            return fallback
+
+    def _execute_action(
+        self,
+        intent: str,
+        entities: Dict,
+        text: str,
+        sentiment: str,
+    ) -> Optional[str]:
+        """
+        Ejecuta la acción de negocio correspondiente a la intención
+        y retorna un resultado estructurado para que el LLM lo incluya
+        en su respuesta (ej: número de ticket creado, estado consultado).
+
+        Retorna None si no hay acción concreta que ejecutar.
+        """
+        # Escalación automática por frustración acumulada
+        if sentiment == "negative" and intent not in ("escalar_humano", "despedida"):
+            neg_count = self.conversation.intent_counts.get("queja", 0)
+            if neg_count >= 2:
+                result = self.escalation.transfer_with_context(
+                    self.conversation.get_summary()
+                )
+                self.conversation.set_context("escalated", True)
+                return result
+
+        if intent == "crear_ticket":
+            result = self.tickets.create(entities, text)
+            # Extraer número de ticket del resultado para el contexto
+            import re
+            match = re.search(r"TKT-\d{4}-\d{6}", result)
+            if match:
+                self.conversation.set_context("last_ticket", match.group())
+            return result
+
+        if intent == "consultar_estado":
+            return self.tickets.check_status(entities)
+
+        if intent == "queja":
+            result = self.tickets.create_complaint(entities, text)
+            return result
+
+        if intent == "escalar_humano":
+            result = self.escalation.transfer_with_context(
+                self.conversation.get_summary()
+            )
+            self.conversation.set_context("escalated", True)
+            return result
+
+        if intent == "despedida":
+            self.conversation.set_context("awaiting_csat", True)
+            return None  # LLM maneja la despedida con CSAT
+
+        # Para FAQ y saludo: pasar contexto de KB al LLM sin ejecutar acción
+        if intent == "faq":
+            faq_context = self.faq.answer(text)
+            # Si la FAQ tiene una respuesta concreta, pasarla al LLM como contexto
+            if "No encontré información" not in faq_context:
+                return f"Información disponible: {faq_context}"
+
+
+        # Handlers INDEPENDIENTES - sin depender de explicit_result
+        if intent == "facturacion_solicitar":
+            return "Para generar tu factura necesito:\n\n1. Tu nombre o razón social\n2. CUIT/CUIL o DNI\n3. Email para enviártela\n4. Dirección de facturación\n\n¿Me podés proporcionar esos datos?"
+
+        if intent == "metodos_pago":
+            return "Aceptamos los siguientes métodos de pago:\n\n💳 Tarjetas de crédito y débito (Visa, Mastercard, Amex)\n🏦 Transferencia bancaria\n💵 Efectivo en puntos de pago (Rapipago, Pago Fácil)\n💰 Mercado Pago\n\n¿Con cuál preferís pagar?"
+
+        if intent == "hacer_pedido":
+            return "¡Perfecto! Para ayudarte con tu pedido necesito:\n\n1. ¿Qué producto te gustaría comprar?\n2. ¿Qué cantidad necesitas?\n3. ¿A dónde lo enviaremos?\n\nDéjame ayudarte con el proceso."
+
+        if intent == "consultar_horario":
+            return "Nuestro horario de atención es:\n\n🕐 Lunes a Viernes: 9:00 - 18:00 hs\n🕐 Sábados: 9:00 - 13:00 hs\n📧 Soporte online 24/7\n\n¿Necesitás otra información?"
+
+        if intent == "consultar_ubicacion":
+            return "Estamos ubicados en:\n\n📍 Av. Principal 1234, Ciudad\n📍 Sucursal Norte: Shopping del Norte, Local 45\n📍 Sucursal Sur: Galería del Sur, Planta Baja\n\n🗺️ ¿Necesitás indicaciones para llegar?"
+
+        if intent == "consultar_envios":
+            return "Realizamos envíos a todo el país:\n\n🚚 Envío estándar: 3-5 días hábiles (gratis en compras +$10.000)\n🚀 Envío express: 24-48 hs (consultar costo)\n📦 Retiro en sucursal: gratis y disponible en 2hs\n\n¿A dónde necesitás el envío?"
+
+        if intent == "consultar_devoluciones":
+            return "Política de devoluciones:\n\n✅ 30 días para devolver sin preguntas\n✅ Producto sin usar y en su embalaje original\n✅ Reembolso completo en 5-7 días o cambio inmediato\n✅ Retiro gratis desde tu domicilio\n\n¿Necesitás iniciar una devolución?"
+
+        if intent == "consultar_estado_pedido":
+            return "Para consultar el estado de tu pedido necesito:\n\n1. Número de pedido (ej: #PED-12345)\n2. O tu número de teléfono registrado\n3. O tu email de compra\n\n¿Me podés proporcionar alguno de estos datos?"
+
+        if intent == "consultar_precios":
+            return "Tenemos productos para todos los presupuestos:\n\n💰 Productos desde $500\n💳 3, 6 y 12 cuotas sin interés con tarjetas seleccionadas\n🏦 10% descuento en transferencia/efectivo\n🎁 Promociones semanales en nuestra web\n\n¿Qué producto te interesa?"
+
+        if intent == "consultar_productos":
+            return "Contamos con amplia variedad:\n\n📦 Más de 1.000 productos en stock\n🔍 Catálogo completo en econify.store\n📱 Asesoramiento personalizado por WhatsApp\n✨ Productos nuevos cada semana\n\n¿Qué tipo de producto buscás?"
+
+        if intent == "crear_reclamo_empatico":
+            return "Lamento mucho que hayas tenido esta experiencia. Para ayudarte de inmediato:\n\n1. Voy a generar un ticket prioritario\n2. Un supervisor te contactará en menos de 2 horas\n3. Buscaremos la mejor solución para vos\n\n¿Me podés contar brevemente qué sucedió?"
+
+        if intent == "saludo":
+            return "¡Hola! 👋 Bienvenido/a a Econify.\n\nSoy tu asistente virtual y estoy aquí para ayudarte.\n\n¿En qué puedo asistirte hoy?\n\n💡 Puedo ayudarte con: Pedidos, Facturación, Envíos, Devoluciones, Consultas generales"
+
+        if intent == "despedida":
+            return "¡Gracias por contactarnos! 😊\n\nQue tengas un excelente día.\n\n¿Necesitás algo más antes de finalizar? Estoy aquí para lo que necesites."
+
+        if intent == "consulta_general":
+            return "Te puedo ayudar con:\n\n📋 Hacer o consultar un pedido\n🧾 Facturación y comprobantes\n💳 Métodos de pago y promociones\n🚚 Envíos, entregas y seguimiento\n🔄 Devoluciones y cambios\n❓ Consultas generales\n\n¿Sobre qué tema querés consultar?"
+
+
+
+        # Horarios de atención
+        if intent == "consultar_horario":
+            return "Nuestro horario de atención es:\n\n🕐 Lunes a Viernes: 9:00 - 18:00 hs\n🕐 Sábados: 9:00 - 13:00 hs\n\n¿Necesitás otra información?"
+
+        # Ubicación
+        if intent == "consultar_ubicacion":
+            return "Estamos ubicados en:\n\n📍 Av. Principal 1234, Ciudad\n📍 Tenemos 3 sucursales más\n\n¿Necesitás indicaciones para llegar?"
+
+        # Envíos
+        if intent == "consultar_envios":
+            return "Realizamos envíos a todo el país:\n\n🚚 Envío estándar: 3-5 días hábiles\n🚀 Envío express: 24-48 hs (consultar costo)\n📦 Envío gratis en compras mayores a $10,000\n\n¿A dónde necesitás el envío?"
+
+        # Devoluciones
+        if intent == "consultar_devoluciones":
+            return "Política de devoluciones:\n\n✅ 30 días para devolver\n✅ Producto sin usar y en su embalaje original\n✅ Reembolso completo o cambio\n\n¿Necesitás iniciar una devolución?"
+
+        # Estado de pedido
+        if intent == "consultar_estado_pedido":
+            return "Para consultar el estado de tu pedido necesito:\n\n1. Número de pedido\n2. O tu número de teléfono\n\n¿Me podés proporcionar alguno de estos datos?"
+
+        # Precios
+        if intent == "consultar_precios":
+            return "Tenemos productos para todos los presupuestos:\n\n💰 Productos desde $500\n💳 Descuentos en efectivo\n🏦 Cuotas sin interés con tarjetas seleccionadas\n\n¿Qué producto te interesa?"
+
+        # Productos
+        if intent == "consultar_productos":
+            return "Contamos con amplia variedad de productos:\n\n📦 Más de 1000 productos disponibles\n🔍 Catálogo online en nuestra web\n📱 Asesoramiento personalizado\n\n¿Qué tipo de producto buscás?"
+
+        # Reclamos
+        if intent == "crear_reclamo":
+            return "Lamento escuchar que tuviste un problema. Para ayudarte:\n\n1. Voy a generar un ticket de reclamo\n2. Un supervisor te contactará en 24hs\n\n¿Me podés contar qué sucedió?"
+
+        # Saludo
+        if intent == "saludo":
+            return "¡Hola! 👋 Bienvenido/a. Soy tu asistente virtual.\n\n¿En qué puedo ayudarte hoy?\n\nPuedo ayudarte con:\n- Pedidos\n- Facturación\n- Envíos\n- Consultas generales"
+
+        # Despedida
+        if intent == "despedida":
+            return "¡Gracias por contactarnos! 😊\n\nQue tengas un excelente día.\n\n¿Necesitás algo más antes de finalizar?"
+
+        # Consulta general
+        if intent == "consulta_general":
+            return "Te puedo ayudar con:\n\n📋 Hacer un pedido\n🧾 Facturación\n💳 Métodos de pago\n🚚 Envíos y entregas\n📦 Seguimiento de pedidos\n🔄 Devoluciones\n\n¿Sobre qué tema querés consultar?"
+
+
+        # Fallback inteligente cuando no hay match
+        return """No estoy seguro de haber entendido bien. 
+
+Te puedo ayudar con:
+📋 Hacer un pedido
+🧾 Facturación  
+💳 Métodos de pago
+🚚 Envíos
+📦 Seguimiento
+🔄 Devoluciones
+
+¿Podrías reformular tu consulta o elegir uno de estos temas?"""
+
+    def _build_customer_context(self) -> Optional[Dict]:
+        """Construye el contexto del cliente desde la sesión actual."""
+        authenticated = self.conversation.get_context("authenticated", False)
+        if not authenticated:
+            return None
+
+        return {
+            "name": self.conversation.get_context("user_name", ""),
+            "account_id": self.conversation.get_context("user_id", ""),
+            "plan": self.conversation.get_context("plan", ""),
+            "phone": self.conversation.get_context("phone", ""),
+            "last_ticket": self.conversation.get_context("last_ticket", ""),
+            "history_summary": (
+                f"{self.conversation.get_duration()}s en llamada, "
+                f"{len(self.conversation.get_history())} turnos"
+            ),
+        }
+
+    def _try_authenticate_by_phone(self, phone: str) -> bool:
+        """
+        Busca al cliente en la BD por número de teléfono y actualiza el contexto
+        de conversación si se encuentra. Marca la sesión como autenticada.
+
+        Args:
+            phone: Número de teléfono extraído de las entidades o del caller ID.
+
+        Returns:
+            True si el cliente fue encontrado y autenticado.
+        """
+        try:
+            from integrations.database import Database
+            db = Database()
+            customer = db.get_customer_by_phone(phone)
+            db.close()
+
+            if customer:
+                self.conversation.set_context("authenticated", True)
+                self.conversation.set_context("user_name", customer.get("name", ""))
+                self.conversation.set_context("user_id", str(customer.get("id", "")))
+                self.conversation.set_context("plan", customer.get("plan_id", ""))
+                self.conversation.set_context("phone", phone)
+                self.conversation.set_state("ATENDIENDO")
+                self.logger.info(
+                    f"[{self.session_id}] Cliente autenticado: "
+                    f"{customer.get('name')} | cuenta={customer.get('id')}"
+                )
+                return True
+            else:
+                self.logger.info(f"[{self.session_id}] Teléfono {phone} no registrado")
+                return False
+
+        except Exception as e:
+            self.logger.warning(f"[{self.session_id}] Error en lookup de cliente: {e}")
+            return False
+
+    def _route_intent(
+        self,
+        intent: str,
+        entities: Dict,
+        text: str,
+        sentiment: str,
+    ) -> str:
+        """
+        Mantiene compatibilidad con código que llame directamente a _route_intent.
+        Internamente usa _execute_action + response_generator.
+        """
+        action_result = self._execute_action(intent, entities, text, sentiment)
+        customer_context = self._build_customer_context()
+        return self.response_generator.generate(
+            user_text=text,
+            history=self.conversation.get_history_for_llm(),
+            intent=intent,
+            entities=entities,
+            customer_context=customer_context,
+            action_result=action_result,
+        )
+
+    # ── Handlers específicos ──────────────────────────────────────────────────
+
+    def _handle_saludo(self, entities: Dict) -> str:
+        """Maneja el saludo inicial verificando si el usuario ya está autenticado."""
+        if self.conversation.get_context("authenticated"):
+            name = self.conversation.get_context("user_name", "")
+            return f"¡Hola{' ' + name if name else ''}! ¿En qué más te puedo ayudar?"
+        return self.faq.answer("saludo")
+
+    def _handle_despedida(self) -> str:
+        """Maneja la despedida y solicita calificación CSAT."""
+        csat_request = (
+            "Antes de despedirme, ¿cómo calificarías la atención de hoy? "
+            "Del 1 al 5, donde 5 es excelente."
+        )
+        self.conversation.set_context("awaiting_csat", True)
+        return csat_request
+
+    def _handle_silence(self) -> str:
+        """Maneja cuando no hay audio o el texto está vacío."""
+        count = self.conversation.increment_fallback()
+        if count == 1:
+            response = "¿Sigues ahí? Cuando estés listo, cuéntame en qué te puedo ayudar."
+        elif count == 2:
+            response = "Parece que hay problemas con la conexión. Di 'sí' para continuar."
+        else:
+            response = (
+                "No he podido escucharte. Voy a finalizar la llamada. "
+                "Puedes volver a llamarnos cuando lo necesites."
+            )
+            self.is_active = False
+        self.tts.speak(response)
+        return response
+
+    def _handle_fallback(self) -> str:
+        """Maneja cuando no se detecta una intención clara."""
+        count = self.conversation.increment_fallback()
+        idx = min(count - 1, len(self.FALLBACK_RESPONSES) - 1)
+        response = self.FALLBACK_RESPONSES[idx]
+
+        # Después de 3 fallbacks consecutivos, ofrecer escalación
+        if count >= settings.MAX_FALLBACK_ATTEMPTS:
+            response = (
+                "Lamentablemente no estoy logrando entenderte correctamente. "
+                "¿Quieres que te transfiera con un agente humano?"
+            )
+            self.conversation.set_context("suggest_escalation", True)
+
+        return response
+
+    # ── Persistencia ──────────────────────────────────────────────────────────
+
+    def _save_call_log(self) -> None:
+        """Guarda el registro completo de la llamada en la base de datos."""
+        try:
+            from integrations.database import Database
+
+            db = Database()
+            summary = self.conversation.get_summary()
+            log_entry = {
+                "session_id": self.session_id,
+                "transcript": str([
+                    {"role": m["role"], "content": m["content"]}
+                    for m in self.conversation.get_history()
+                ]),
+                "duration": summary["duration_seconds"],
+                "resolution_status": (
+                    "resolved" if summary.get("last_intent") == "despedida" else "unresolved"
+                ),
+                "csat_score": self.conversation.get_context("csat_score"),
+                "created_at": datetime.now(),
+            }
+            db.insert("conversations", log_entry)
+            self.logger.info(f"Log de llamada guardado | Sesión: {self.session_id}")
+
+        except Exception as e:
+            self.logger.error(f"Error guardando log: {e}")

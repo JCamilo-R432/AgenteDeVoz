@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Conversaciones - AgenteDeVoz</title>
+  <link rel="stylesheet" href="/dashboard/static/css/style.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">AgenteDeVoz</div>
+    <div class="nav-links">
+      <a href="/dashboard" class="nav-link">Inicio</a>
+      <a href="/dashboard/conversations" class="nav-link active">Conversaciones</a>
+      <a href="/dashboard/tickets" class="nav-link">Tickets</a>
+      <a href="/dashboard/alerts" class="nav-link">Alertas</a>
+    </div>
+    <div class="nav-status">
+      <span class="status-dot status-ok"></span>
+      Sistema OK
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="page-header">
+      <h1 class="page-title">Conversaciones</h1>
+      <div class="header-actions">
+        <button onclick="refreshTable()" class="btn btn-secondary">Actualizar</button>
+        <span class="badge badge-ok" id="live-badge">LIVE</span>
+      </div>
+    </div>
+
+    <!-- Filtros -->
+    <div class="filter-bar">
+      <input type="text" id="filter-input" placeholder="Filtrar por telefono o ID..." class="filter-input">
+      <select id="filter-state" class="filter-select">
+        <option value="">Todos los estados</option>
+        <option value="ESCUCHANDO">ESCUCHANDO</option>
+        <option value="PROCESANDO">PROCESANDO</option>
+        <option value="RESPONDIENDO">RESPONDIENDO</option>
+        <option value="AUTENTICANDO">AUTENTICANDO</option>
+        <option value="FIN">FIN</option>
+      </select>
+    </div>
+
+    <table class="data-table" id="conv-table">
+      <thead>
+        <tr>
+          <th>Session ID</th>
+          <th>Telefono</th>
+          <th>Estado</th>
+          <th>Ultima Intencion</th>
+          <th>Duracion</th>
+          <th>Turnos</th>
+          <th>Inicio</th>
+        </tr>
+      </thead>
+      <tbody id="conv-tbody">
+        {% for conv in conversations %}
+        <tr data-state="{{ conv.state }}" data-phone="{{ conv.phone }}" data-id="{{ conv.session_id }}">
+          <td class="mono">{{ conv.session_id }}</td>
+          <td>{{ conv.phone }}</td>
+          <td>
+            <span class="badge {% if conv.state == 'FIN' %}badge-gray{% elif conv.state == 'ESCUCHANDO' %}badge-ok{% else %}badge-info{% endif %}">
+              {{ conv.state }}
+            </span>
+          </td>
+          <td><span class="intent-tag">{{ conv.last_intent }}</span></td>
+          <td>{{ conv.duration }}</td>
+          <td>{{ conv.turns }}</td>
+          <td>{{ conv.started_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <div class="table-footer">
+      Mostrando {{ conversations|length }} conversaciones.
+      <span id="live-count"></span>
+    </div>
+  </main>
+
+  <script src="/dashboard/static/js/dashboard.js"></script>
+  <script>
+    // Filtrado en tabla
+    document.getElementById("filter-input").addEventListener("input", filterTable);
+    document.getElementById("filter-state").addEventListener("change", filterTable);
+
+    function filterTable() {
+      const text = document.getElementById("filter-input").value.toLowerCase();
+      const state = document.getElementById("filter-state").value;
+      document.querySelectorAll("#conv-tbody tr").forEach(row => {
+        const phone = (row.dataset.phone || "").toLowerCase();
+        const id = (row.dataset.id || "").toLowerCase();
+        const rowState = row.dataset.state || "";
+        const textMatch = !text || phone.includes(text) || id.includes(text);
+        const stateMatch = !state || rowState === state;
+        row.style.display = textMatch && stateMatch ? "" : "none";
+      });
+    }
+
+    function refreshTable() {
+      fetch("/dashboard/api/conversations")
+        .then(r => r.json())
+        .then(data => {
+          document.getElementById("live-count").textContent =
+            `| ${data.conversations.length} en tiempo real`;
+        });
+    }
+
+    // Auto-refresh cada 10s
+    setInterval(refreshTable, 10000);
+  </script>
+</body>
+</html>

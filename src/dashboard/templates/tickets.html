@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tickets - AgenteDeVoz</title>
+  <link rel="stylesheet" href="/dashboard/static/css/style.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">AgenteDeVoz</div>
+    <div class="nav-links">
+      <a href="/dashboard" class="nav-link">Inicio</a>
+      <a href="/dashboard/conversations" class="nav-link">Conversaciones</a>
+      <a href="/dashboard/tickets" class="nav-link active">Tickets</a>
+      <a href="/dashboard/alerts" class="nav-link">Alertas</a>
+    </div>
+    <div class="nav-status">
+      <span class="status-dot status-ok"></span>
+      Sistema OK
+    </div>
+  </nav>
+
+  <main class="container">
+    <h1 class="page-title">Gestion de Tickets</h1>
+
+    <!-- KPIs de tickets -->
+    <div class="kpi-grid kpi-grid-4">
+      <div class="kpi-card kpi-danger">
+        <div class="kpi-value">{{ ticket_stats.total_urgente }}</div>
+        <div class="kpi-label">URGENTES</div>
+      </div>
+      <div class="kpi-card kpi-warning">
+        <div class="kpi-value">{{ ticket_stats.total_alta }}</div>
+        <div class="kpi-label">ALTA Prioridad</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-value">{{ ticket_stats.total_open }}</div>
+        <div class="kpi-label">Total Abiertos</div>
+      </div>
+      <div class="kpi-card kpi-success">
+        <div class="kpi-value">{{ ticket_stats.resolved_today }}</div>
+        <div class="kpi-label">Resueltos Hoy</div>
+      </div>
+    </div>
+
+    <!-- Filtros -->
+    <div class="filter-bar">
+      <input type="text" id="filter-input" placeholder="Buscar por ID o telefono..." class="filter-input">
+      <select id="filter-priority" class="filter-select">
+        <option value="">Todas las prioridades</option>
+        <option value="URGENTE">URGENTE</option>
+        <option value="ALTA">ALTA</option>
+        <option value="MEDIA">MEDIA</option>
+        <option value="BAJA">BAJA</option>
+      </select>
+      <select id="filter-status" class="filter-select">
+        <option value="">Todos los estados</option>
+        <option value="ABIERTO">ABIERTO</option>
+        <option value="EN_PROGRESO">EN PROGRESO</option>
+        <option value="RESUELTO">RESUELTO</option>
+        <option value="CERRADO">CERRADO</option>
+      </select>
+    </div>
+
+    <table class="data-table" id="ticket-table">
+      <thead>
+        <tr>
+          <th>Ticket ID</th>
+          <th>Categoria</th>
+          <th>Prioridad</th>
+          <th>Estado</th>
+          <th>Telefono</th>
+          <th>Creado</th>
+        </tr>
+      </thead>
+      <tbody id="ticket-tbody">
+        {% for ticket in tickets %}
+        <tr data-priority="{{ ticket.priority }}" data-status="{{ ticket.status }}"
+            data-id="{{ ticket.ticket_id }}" data-phone="{{ ticket.phone }}">
+          <td class="mono">{{ ticket.ticket_id }}</td>
+          <td>{{ ticket.category }}</td>
+          <td>
+            <span class="badge
+              {% if ticket.priority == 'URGENTE' %}badge-danger
+              {% elif ticket.priority == 'ALTA' %}badge-warning
+              {% elif ticket.priority == 'MEDIA' %}badge-info
+              {% else %}badge-gray{% endif %}">
+              {{ ticket.priority }}
+            </span>
+          </td>
+          <td>
+            <span class="badge
+              {% if ticket.status == 'RESUELTO' or ticket.status == 'CERRADO' %}badge-ok
+              {% elif ticket.status == 'EN_PROGRESO' %}badge-info
+              {% else %}badge-warning{% endif %}">
+              {{ ticket.status }}
+            </span>
+          </td>
+          <td>{{ ticket.phone }}</td>
+          <td>{{ ticket.created_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </main>
+
+  <script src="/dashboard/static/js/dashboard.js"></script>
+  <script>
+    document.getElementById("filter-input").addEventListener("input", filterTickets);
+    document.getElementById("filter-priority").addEventListener("change", filterTickets);
+    document.getElementById("filter-status").addEventListener("change", filterTickets);
+
+    function filterTickets() {
+      const text = document.getElementById("filter-input").value.toLowerCase();
+      const priority = document.getElementById("filter-priority").value;
+      const status = document.getElementById("filter-status").value;
+      document.querySelectorAll("#ticket-tbody tr").forEach(row => {
+        const id = (row.dataset.id || "").toLowerCase();
+        const phone = (row.dataset.phone || "").toLowerCase();
+        const textMatch = !text || id.includes(text) || phone.includes(text);
+        const priMatch = !priority || row.dataset.priority === priority;
+        const statMatch = !status || row.dataset.status === status;
+        row.style.display = textMatch && priMatch && statMatch ? "" : "none";
+      });
+    }
+  </script>
+</body>
+</html>

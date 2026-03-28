@@ -1,0 +1,103 @@
+# Incident Rules Configuration - AgenteDeVoz
+# Gap #16: Incident Management
+# Reglas para creacion automatica de incidentes desde alertas
+
+---
+auto_incident_rules:
+  - name: api_down
+    condition: health_check_fails_consecutive >= 3
+    severity: sev1
+    service: api-gateway
+    title: "API Gateway no responde"
+    labels: [api, critical, auto-created]
+    playbook: api_down
+
+  - name: high_latency
+    condition: p99_latency_ms > 5000
+    duration_minutes: 5
+    severity: sev2
+    service: api-gateway
+    title: "Latencia API alta (p99 > 5s)"
+    labels: [performance, latency]
+    playbook: high_latency
+
+  - name: error_rate_spike
+    condition: error_rate_5xx_pct > 5.0
+    duration_minutes: 2
+    severity: sev2
+    service: api-gateway
+    title: "Tasa de errores 5xx elevada"
+    labels: [errors, reliability]
+
+  - name: db_replication_lag
+    condition: replica_lag_seconds > 60
+    severity: sev2
+    service: postgresql
+    title: "Lag de replicacion excesivo"
+    labels: [database, replication]
+
+  - name: disk_space_low
+    condition: disk_free_pct < 10
+    severity: sev3
+    service: storage
+    title: "Espacio en disco bajo (< 10%)"
+    labels: [infrastructure, storage]
+
+  - name: memory_high
+    condition: memory_used_pct > 90
+    duration_minutes: 10
+    severity: sev3
+    service: compute
+    title: "Uso de memoria alto (> 90%)"
+    labels: [performance, memory]
+
+  - name: cost_emergency
+    condition: daily_cost_pct > 100
+    severity: sev2
+    service: cost-monitoring
+    title: "Presupuesto diario excedido"
+    labels: [cost, budget]
+
+  - name: security_scan_critical
+    condition: new_critical_cve_detected
+    severity: sev2
+    service: security
+    title: "CVE critico detectado en dependencias"
+    labels: [security, cve]
+
+slo_targets:
+  api_availability: 99.9           # %
+  api_latency_p99_ms: 2000
+  stt_latency_p99_ms: 1000
+  tts_latency_p99_ms: 500
+
+ack_slos:
+  sev1_minutes: 5
+  sev2_minutes: 15
+  sev3_minutes: 60
+  sev4_hours: 24
+
+resolution_slos:
+  sev1_hours: 1
+  sev2_hours: 4
+  sev3_hours: 24
+  sev4_days: 7
+
+escalation_policies:
+  default:
+    levels:
+      - type: primary
+        wait_minutes: 15
+      - type: secondary
+        wait_minutes: 30
+      - type: manager
+        wait_minutes: 60
+
+  critical:
+    levels:
+      - type: primary
+        wait_minutes: 5
+      - type: secondary
+        wait_minutes: 10
+      - type: manager
+        wait_minutes: 15

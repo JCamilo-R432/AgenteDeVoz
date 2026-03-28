@@ -1,0 +1,41 @@
+{
+  "certbot": {
+    "version": "2.x",
+    "installation": {
+      "debian_ubuntu": "apt-get install certbot python3-certbot-nginx",
+      "centos_rhel": "dnf install certbot python3-certbot-nginx",
+      "snap": "snap install --classic certbot"
+    }
+  },
+  "domains": [
+    {
+      "primary": "agentevoz.com",
+      "san": ["www.agentevoz.com", "api.agentevoz.com"],
+      "webroot": "/var/www/html",
+      "plugin": "nginx"
+    }
+  ],
+  "account": {
+    "email": "admin@agentevoz.com",
+    "agree_tos": true,
+    "staging": false
+  },
+  "renewal": {
+    "pre_hook": "/scripts/pre_renewal.sh",
+    "post_hook": "systemctl reload nginx",
+    "deploy_hook": "",
+    "max_log_backups": 5
+  },
+  "rate_limits": {
+    "certificates_per_domain_per_week": 50,
+    "duplicate_certificate_limit": 5,
+    "failed_validation_limit": 5,
+    "note": "Use staging for testing to avoid hitting rate limits"
+  },
+  "troubleshooting": {
+    "test_renewal": "certbot renew --dry-run",
+    "check_expiry": "openssl x509 -in /etc/letsencrypt/live/agentevoz.com/cert.pem -noout -enddate",
+    "check_certificate": "openssl s_client -connect agentevoz.com:443 -servername agentevoz.com",
+    "view_logs": "journalctl -u certbot"
+  }
+}

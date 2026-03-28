@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentevoz-service
+  namespace: production
+  labels:
+    app: agentevoz
+  annotations:
+    prometheus.io/scrape: "true"
+spec:
+  type: ClusterIP
+  selector:
+    app: agentevoz
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agentevoz-ingress
+  namespace: production
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.agentevoz.com
+      secretName: agentevoz-tls
+  rules:
+    - host: api.agentevoz.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: agentevoz-service
+                port:
+                  number: 80

@@ -1,0 +1,67 @@
+# ============================================================
+# Agente de Voz - Servicio systemd (Linux produccion)
+# Instalacion:
+#   sudo cp agentevoz.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable agentevoz
+#   sudo systemctl start agentevoz
+# ============================================================
+
+[Unit]
+Description=Agente de Voz Customer Service
+Documentation=https://github.com/tuempresa/agentevoz
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=exec
+User=agentevoz
+Group=agentevoz
+WorkingDirectory=/opt/agentevoz
+
+# Variables de entorno
+EnvironmentFile=/opt/agentevoz/config/production.env
+Environment="PYTHONPATH=/opt/agentevoz/src"
+Environment="PYTHONUNBUFFERED=1"
+
+# Comando de inicio con Gunicorn (produccion)
+ExecStart=/opt/agentevoz/venv/bin/gunicorn \
+    src.server:app \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --workers 4 \
+    --bind 0.0.0.0:8000 \
+    --timeout 120 \
+    --graceful-timeout 30 \
+    --max-requests 1000 \
+    --max-requests-jitter 100 \
+    --access-logfile /var/log/agentevoz/access.log \
+    --error-logfile /var/log/agentevoz/error.log \
+    --log-level info
+
+# Graceful reload
+ExecReload=/bin/kill -s HUP $MAINPID
+
+# Reinicio automático
+Restart=on-failure
+RestartSec=5s
+StartLimitInterval=60s
+StartLimitBurst=3
+
+# Seguridad (hardening)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/log/agentevoz /opt/agentevoz/logs /tmp
+
+# Limites de recursos
+LimitNOFILE=65536
+TimeoutStartSec=60s
+TimeoutStopSec=30s
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=agentevoz
+
+[Install]
+WantedBy=multi-user.target

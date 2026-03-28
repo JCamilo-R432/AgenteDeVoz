@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Alertas - AgenteDeVoz</title>
+  <link rel="stylesheet" href="/dashboard/static/css/style.css">
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">AgenteDeVoz</div>
+    <div class="nav-links">
+      <a href="/dashboard" class="nav-link">Inicio</a>
+      <a href="/dashboard/conversations" class="nav-link">Conversaciones</a>
+      <a href="/dashboard/tickets" class="nav-link">Tickets</a>
+      <a href="/dashboard/alerts" class="nav-link active">Alertas</a>
+    </div>
+    <div class="nav-status">
+      {% if active_count > 0 %}
+        <span class="status-dot status-warning"></span>
+        {{ active_count }} Alerta(s) Activa(s)
+      {% else %}
+        <span class="status-dot status-ok"></span>
+        Sin Alertas Activas
+      {% endif %}
+    </div>
+  </nav>
+
+  <main class="container">
+    <h1 class="page-title">
+      Alertas del Sistema
+      {% if active_count > 0 %}
+        <span class="badge badge-warning">{{ active_count }} activas</span>
+      {% endif %}
+    </h1>
+
+    <div class="alerts-list">
+      {% for alert in alerts %}
+      <div class="alert-card alert-{{ alert.severity.lower() }} {% if alert.resolved %}alert-resolved{% endif %}">
+        <div class="alert-header">
+          <span class="alert-id">{{ alert.id }}</span>
+          <span class="badge
+            {% if alert.severity == 'CRITICAL' %}badge-danger
+            {% elif alert.severity == 'WARNING' %}badge-warning
+            {% else %}badge-info{% endif %}">
+            {{ alert.severity }}
+          </span>
+          <span class="alert-time">{{ alert.time }}</span>
+          {% if alert.resolved %}
+            <span class="badge badge-ok">RESUELTO</span>
+          {% endif %}
+        </div>
+        <div class="alert-component">Componente: {{ alert.component }}</div>
+        <div class="alert-message">{{ alert.message }}</div>
+        {% if not alert.resolved %}
+        <div class="alert-actions">
+          <button class="btn btn-sm btn-secondary" onclick="acknowledgeAlert('{{ alert.id }}')">
+            Reconocer
+          </button>
+          <button class="btn btn-sm btn-success" onclick="resolveAlert('{{ alert.id }}')">
+            Marcar Resuelto
+          </button>
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+
+    {% if not alerts %}
+    <div class="empty-state">
+      <div class="empty-icon">OK</div>
+      <div class="empty-text">No hay alertas registradas.</div>
+    </div>
+    {% endif %}
+  </main>
+
+  <script src="/dashboard/static/js/dashboard.js"></script>
+  <script>
+    function acknowledgeAlert(id) {
+      console.log("Reconociendo alerta:", id);
+      // TODO: POST /dashboard/api/alerts/{id}/acknowledge
+      alert("Alerta " + id + " reconocida.");
+    }
+    function resolveAlert(id) {
+      console.log("Resolviendo alerta:", id);
+      // TODO: POST /dashboard/api/alerts/{id}/resolve
+      alert("Alerta " + id + " marcada como resuelta.");
+    }
+  </script>
+</body>
+</html>

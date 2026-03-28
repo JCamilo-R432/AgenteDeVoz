@@ -1,0 +1,45 @@
+{
+  "vault": {
+    "mode": "local",
+    "path": "production/secrets.vault",
+    "encryption": {
+      "algorithm": "AES-256-GCM",
+      "kdf": "PBKDF2-HMAC-SHA256",
+      "iterations": 480000,
+      "key_length": 32
+    },
+    "permissions": "0600"
+  },
+  "rotation": {
+    "enabled": true,
+    "schedule_cron": "0 2 1 * *",
+    "warning_days_before_expiry": 7,
+    "keys_requiring_rotation": [
+      "OPENAI_API_KEY",
+      "STRIPE_SECRET_KEY",
+      "TWILIO_AUTH_TOKEN",
+      "SENDGRID_API_KEY"
+    ]
+  },
+  "audit": {
+    "enabled": true,
+    "log_reads": true,
+    "log_writes": true,
+    "log_deletes": true,
+    "log_rotations": true,
+    "log_format": "json"
+  },
+  "backup": {
+    "enabled": true,
+    "encrypt_backup": true,
+    "backup_dir": "backups/vault",
+    "retention_days": 90
+  },
+  "hashicorp_vault": {
+    "enabled": false,
+    "address": "https://vault.agentevoz.com:8200",
+    "auth_method": "token",
+    "secret_path": "secret/agentevoz",
+    "token_env_var": "VAULT_TOKEN"
+  }
+}

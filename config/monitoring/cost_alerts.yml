@@ -1,0 +1,75 @@
+# Cost Alerts Configuration - AgenteDeVoz
+# Gap #15: Cost Monitoring
+# Usado por Prometheus AlertManager o sistema propio
+
+---
+alerts:
+  daily_budget:
+    warning_pct: 75
+    critical_pct: 90
+    emergency_pct: 100
+    limits:
+      default_usd: 100.00
+      stt_usd: 30.00
+      tts_usd: 20.00
+      llm_usd: 40.00
+      telephony_usd: 20.00
+      storage_usd: 5.00
+
+  monthly_budget:
+    warning_pct: 75
+    critical_pct: 90
+    emergency_pct: 100
+    limits:
+      default_usd: 2000.00
+      stt_usd: 600.00
+      tts_usd: 400.00
+      llm_usd: 800.00
+      telephony_usd: 400.00
+      storage_usd: 100.00
+
+  anomaly_detection:
+    enabled: true
+    spike_multiplier: 3.0     # Alerta si gasto actual > 3x promedio hora anterior
+    min_baseline_hours: 24
+
+  cooldown:
+    warning_hours: 4
+    critical_hours: 1
+    emergency_hours: 0         # Sin cooldown para emergencias
+
+notification_channels:
+  slack:
+    enabled: true
+    webhook_env: SLACK_COST_WEBHOOK
+    channel: "#cost-alerts"
+    mention_on_critical: "@platform-team"
+
+  email:
+    enabled: true
+    recipients:
+      - engineering@agentevoz.com
+      - finance@agentevoz.com
+    on_severity: [critical, emergency]
+
+  pagerduty:
+    enabled: true
+    routing_key_env: PAGERDUTY_COST_KEY
+    on_severity: [emergency]
+
+providers:
+  google:
+    stt_per_second: 0.000267
+    tts_per_char: 0.000004
+  elevenlabs:
+    tts_per_char: 0.0003
+  openai:
+    llm_input_per_token: 0.0000015
+    llm_output_per_token: 0.000006
+  anthropic:
+    llm_input_per_token: 0.000003
+    llm_output_per_token: 0.000015
+  twilio:
+    telephony_per_minute: 0.0085
+  deepgram:
+    stt_per_second: 0.000208
